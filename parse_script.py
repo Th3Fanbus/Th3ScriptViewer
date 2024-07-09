@@ -7,6 +7,8 @@ import re
 import sys
 import tempfile
 
+DUMP_INTERMEDIATE = False
+
 BG_COLOR = "#222222"
 FG_COLOR = "#dddddd"
 
@@ -69,6 +71,9 @@ class AST:
     def ng_const_num(self, inst, kind, value):
         return self.ng_const(inst, kind, str(value))
 
+    def ng_const_struct(self, inst, kind, value):
+        return self.ng_const(inst, kind, value)
+
     def ng_let(self, inst, kind, var, expr):
         return self.ng_baseinst(inst, kind, var=self.ng_inst(var), expr=self.ng_inst(expr))
 
@@ -104,8 +109,8 @@ class AST:
             case _:
                 raise ValueError(obj)
 
-    def ng_func(self, inst, kind, func, params):
-        return self.ng_baseinst(inst, kind, func=self.ng_objref(func), params=[self.ng_inst(p) for p in params])
+    def ng_func(self, inst, kind, func, params, **kwargs):
+        return self.ng_baseinst(inst, kind, func=self.ng_objref(func), params=[self.ng_inst(p) for p in params], **kwargs)
 
     def ng_ctxinst(self, inst, kind, obj_expr, offset, rvalue_ptr, ctx_expr):
         rvalue = self.ng_propkind("rvalue ptr", rvalue_ptr) if rvalue_ptr else "null"
@@ -132,12 +137,16 @@ class AST:
                 return self.ng_switch(inst, "switch value", sw_index, end_goto, cases, default)
             case {"Inst": "EX_Context", "ObjectExpression": obj_expr, "Offset": offset, "RValuePointer": rvalue_ptr, "ContextExpression": ctx_expr}:
                 return self.ng_ctxinst(inst, "ctx", obj_expr, offset, rvalue_ptr, ctx_expr)
+            case {"Inst": "EX_ClassContext", "ObjectExpression": obj_expr, "Offset": offset, "RValuePointer": rvalue_ptr, "ContextExpression": ctx_expr}:
+                return self.ng_ctxinst(inst, "class ctx", obj_expr, offset, rvalue_ptr, ctx_expr)
             case {"Inst": "EX_InterfaceContext", "InterfaceValue": intf_value}:
                 return self.ng_baseinst(inst, "intf ctx", intf_value=intf_value)
             case {"Inst": "EX_ByteConst", "Value": value}:
                 return self.ng_const_num(inst, "byte", value)
             case {"Inst": "EX_IntConst", "Value": value}:
                 return self.ng_const_num(inst, "int", value)
+            case {"Inst": "EX_SkipOffsetConst", "Value": value}:
+                return self.ng_const_num(inst, "skip offset", value)
             case {"Inst": "EX_FloatConst", "Value": value}:
                 return self.ng_const_num(inst, "float", value)
             case {"Inst": "EX_DoubleConst", "Value": value}:
@@ -146,6 +155,14 @@ class AST:
                 return self.ng_const(inst, "str", value)
             case {"Inst": "EX_NameConst", "Value": value}:
                 return self.ng_const(inst, "name", value)
+            case {"Inst": "EX_VectorConst", "Value": value}:
+                return self.ng_const_struct(inst, "const vec", value)
+            case {"Inst": "EX_RotationConst", "Value": value}:
+                return self.ng_const_struct(inst, "const rot", value)
+            case {"Inst": "EX_TransformConst", "Value": value}:
+                return self.ng_const_struct(inst, "const trans", value)
+            case {"Inst": "EX_SoftObjectConst", "Value": value}:
+                return self.ng_const(inst, "soft obj", self.ng_inst(value))
             case {"Inst": "EX_ObjectConst", "Value": value}:
                 return self.ng_const(inst, "obj", self.ng_objref(value))
             case {"Inst": "EX_IntZero"}:
@@ -168,6 +185,8 @@ class AST:
                 return self.ng_func(inst, "struct const", struct, params)
             case {"Inst": "EX_CallMath", "Function": function, "Parameters": params}:
                 return self.ng_func(inst, "call math", function, params)
+            case {"Inst": "EX_CallMulticastDelegate", "FunctionName": function, "Delegate": delegate, "Parameters": params}:
+                return self.ng_func(inst, "call multi dele", function, params, delegate=self.ng_inst(delegate))
             case {"Inst": "EX_FinalFunction", "Function": function, "Parameters": params}:
                 return self.ng_func(inst, "final func", function, params)
             case {"Inst": "EX_LocalFinalFunction", "Function": function, "Parameters": params}:
@@ -194,12 +213,16 @@ class AST:
                 return self.ng_baseinst(inst, "cast", target=self.ng_inst(target), conv_type=conv_type)
             case {"Inst": "EX_DynamicCast", "Target": target, "Class": clazz}:
                 return self.ng_baseinst(inst, "dyn cast", target=self.ng_inst(target), clazz=self.ng_objref(clazz))
+            case {"Inst": "EX_ObjToInterfaceCast", "Target": target, "InterfaceClass": clazz}:
+                return self.ng_baseinst(inst, "obj to intf cast", target=self.ng_inst(target), clazz=self.ng_objref(clazz))
             case {"Inst": "EX_InstanceVariable", "Variable": variable}:
                 return self.ng_propinst(inst, "instance var", variable)
             case {"Inst": "EX_LocalVariable", "Variable": variable}:
                 return self.ng_propinst(inst, "local var", variable)
             case {"Inst": "EX_LocalOutVariable", "Variable": variable}:
                 return self.ng_propinst(inst, "local out var", variable)
+            case {"Inst": "EX_DefaultVariable", "Variable": variable}:
+                return self.ng_propinst(inst, "def var", variable)
             case {"Inst": "EX_ComputedJump", "OffsetExpression": expression}:
                 # TODO: Figure out how to deal with this
                 return self.ng_baseinst(inst, "computed jump", expr=self.ng_inst(expression), no_flow=True)
@@ -209,6 +232,8 @@ class AST:
                 return self.ng_baseinst(inst, "bind dele", func=self.ng_objref(func_name), delegate=self.ng_inst(delegate), obj_term=self.ng_inst(obj_term))
             case {"Inst": "EX_AddMulticastDelegate", "MulticastDelegate": multi_dele, "Delegate": delegate}:
                 return self.ng_baseinst(inst, "add multi dele", multi_dele=self.ng_inst(multi_dele), delegate=self.ng_inst(delegate))
+            case {"Inst": "EX_RemoveMulticastDelegate", "MulticastDelegate": multi_dele, "Delegate": delegate}:
+                return self.ng_baseinst(inst, "remove multi dele", multi_dele=self.ng_inst(multi_dele), delegate=self.ng_inst(delegate))
             case {"Inst": "EX_Jump", "CodeOffset": jmp_offset, "ObjectPath": objpath}:
                 self.link_list.append((index, jmp_offset))
                 return self.ng_baseinst(inst, "jump", jmp_offset=str(jmp_offset), objpath=self.ng_shortpath(objpath), no_flow=True)
@@ -236,7 +261,15 @@ class AST:
         if self.script_nodes[index]["inst"] == "EX_ComputedJump":
             return
         if self.script_nodes[index]["inst"] == "EX_EndOfScript":
-            assert len(links) == 0 and len(stack) == 0
+            if not len(links) == 0 or not len(stack) == 0:
+                print(f"Unmatched links: {len(links)}")
+                for l in links:
+                    print(f"    {l}")
+                print(f"Remaining stack: {len(stack)}")
+                for s in stack:
+                    print(f"    {s}")
+            assert len(links) == 0
+            stack.clear()
         else:
             assert len(links) > 0 or len(stack) > 0
         if index in self.visited_nodes:
@@ -340,6 +373,12 @@ class ScriptGraph(graphviz.Digraph):
 
 def generate_func_graphs(filename, scriptname, bytecode):
     ast = AST(scriptname, bytecode)
+    if DUMP_INTERMEDIATE:
+        filedir, _ = os.path.splitext(filename)
+        debugfile = os.path.join("graphs", filedir, f"{scriptname}.json")
+        os.makedirs(os.path.dirname(debugfile), exist_ok=True)
+        with open(debugfile, "w") as f:
+            json.dump(ast.script_nodes, f, indent=4)
     graphs = []
     if True:
         g = ScriptGraph(comment=scriptname, format="png")
@@ -362,21 +401,6 @@ def generate_func_graphs(filename, scriptname, bytecode):
             graphs.append((usename, g))
     return graphs
 
-def generate_func_graph(filename, scriptname, bytecode):
-    ast = AST(scriptname, bytecode)
-    data = ast.script_nodes
-    filedir, _ = os.path.splitext(filename)
-    debugfile = os.path.join("graphs", filedir, f"{scriptname}.json")
-    os.makedirs(os.path.dirname(debugfile), exist_ok=True)
-    with open(debugfile, "w") as f:
-        json.dump(data, f, indent=4)
-    g = ScriptGraph(comment=scriptname, format="png")
-    for n in data:
-        g.draw_node(n)
-    for (tail, head) in ast.link_list:
-        g.draw_edge(tail, head)
-    return g
-
 def render_graph_file(g, infilename, name):
     filedir, _ = os.path.splitext(infilename)
     svgfile = os.path.join("graphs", filedir, f"{name}.gv")
@@ -396,11 +420,26 @@ def main(filename):
             case _:
                 print(f"Found Whiskey Tango Foxtrot: {dir(entry).join(", ")}")
 
+def main_dir(dirname):
+    for root, _, files in os.walk(os.path.join(".", dirname)):
+        for file in files:
+            f = os.path.join(root, file)
+            log_file_name = f"# PROCESSING '{f}' #"
+            log_msg_plate = '#' * len(log_file_name)
+            print(log_msg_plate)
+            print(log_file_name)
+            print(log_msg_plate)
+            main(f)
+            print()
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         print(f"Hello {sys.argv[0]}: {sys.argv[1]}")
         main(sys.argv[1])
     else:
-        main("BP_DropPod.json")
+        main("Equip_StunSpear.json")
+        #main_dir("Map_Menu_Titan_Update8/")
+        #main("BPW_InventorySettings_Jetpack.json")
+        #main("SFP_GameWorld.json")
         #main("BP_MusicManager.json")
         #main("BPW_Th3UObjectCounter.json")
