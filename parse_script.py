@@ -153,6 +153,8 @@ class AST:
                 return self.ng_const_num(inst, "double", value)
             case {"Inst": "EX_StringConst", "Value": value}:
                 return self.ng_const(inst, "str", value)
+            case {"Inst": "EX_TextConst", "Value": value}:
+                return self.ng_const(inst, "text", value)
             case {"Inst": "EX_NameConst", "Value": value}:
                 return self.ng_const(inst, "name", value)
             case {"Inst": "EX_VectorConst", "Value": value}:
@@ -212,7 +214,9 @@ class AST:
             case {"Inst": "EX_Cast", "Target": target, "ConversionType": conv_type}:
                 return self.ng_baseinst(inst, "cast", target=self.ng_inst(target), conv_type=conv_type)
             case {"Inst": "EX_DynamicCast", "Target": target, "Class": clazz}:
-                return self.ng_baseinst(inst, "dyn cast", target=self.ng_inst(target), clazz=self.ng_objref(clazz))
+                return self.ng_baseinst(inst, "dyn cast class", target=self.ng_inst(target), clazz=self.ng_objref(clazz))
+            case {"Inst": "EX_DynamicCast", "Target": target, "InterfaceClass": clazz}:
+                return self.ng_baseinst(inst, "dyn cast intf class", target=self.ng_inst(target), clazz=self.ng_objref(clazz))
             case {"Inst": "EX_ObjToInterfaceCast", "Target": target, "InterfaceClass": clazz}:
                 return self.ng_baseinst(inst, "obj to intf cast", target=self.ng_inst(target), clazz=self.ng_objref(clazz))
             case {"Inst": "EX_InstanceVariable", "Variable": variable}:
