@@ -77,14 +77,21 @@ class AST:
     def ng_let(self, inst, kind, var, expr):
         return self.ng_baseinst(inst, kind, var=self.ng_inst(var), expr=self.ng_inst(expr))
 
-    def _ng_propbase(self, prop):
+    def ng_prop(self, prop):
         match prop:
-            case {"Property": {"Name": name, "Type": type}}:
+            case {"Name": name, "Type": type}:
                 return dict(name=name, type=type)
+            case _:
+                raise ValueError(prop)
+
+    def _ng_propbase(self, propbase):
+        match propbase:
+            case {"Property": prop}:
+                return self.ng_prop(prop)
             case {"Path": path, "ResolvedOwner": owner}:
                 return dict(name=path, owner=self.ng_objref(owner))
             case _:
-                raise ValueError(prop)
+                raise ValueError(propbase)
 
     def ng_propkind(self, kind, prop):
         return self.ng_basekind(kind, **self._ng_propbase(prop))
@@ -109,6 +116,13 @@ class AST:
             case _:
                 raise ValueError(obj)
 
+    def ng_innerprop(self, inner_prop):
+        match inner_prop:
+            case {"Owner": owner, "Property": prop}:
+                return self.ng_base(owner=self.ng_objref(owner), prop=self.ng_prop(prop))
+            case _:
+                raise ValueError(inner_prop)
+
     def ng_func(self, inst, kind, func, params, **kwargs):
         return self.ng_baseinst(inst, kind, func=self.ng_objref(func), params=[self.ng_inst(p) for p in params], **kwargs)
 
@@ -129,6 +143,9 @@ class AST:
     def ng_shortpath(self, objpath):
         ridx = objpath.rfind("/") + 1
         return objpath[ridx:]
+
+    def ng_arrconst(self, inst, kind, inner_prop, values):
+        return self.ng_baseinst(inst, kind, inner_prop=self.ng_innerprop(inner_prop), values=[self.ng_inst(v) for v in values]) # TODO: revise values
 
     def ng_inst(self, script, index=None):
         inst = script.get("Inst")
@@ -167,6 +184,8 @@ class AST:
                 return self.ng_const(inst, "soft obj", self.ng_inst(value))
             case {"Inst": "EX_ObjectConst", "Value": value}:
                 return self.ng_const(inst, "obj", self.ng_objref(value))
+            case {"Inst": "EX_ArrayConst", "InnerProperty": inner_prop, "Values": values}:
+                return self.ng_arrconst(inst, "arr const", inner_prop, values)
             case {"Inst": "EX_IntZero"}:
                 return self.ng_const_num(inst, "int", 0)
             case {"Inst": "EX_IntOne"}:
