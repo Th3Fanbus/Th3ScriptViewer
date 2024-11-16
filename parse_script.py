@@ -88,6 +88,8 @@ class AST:
         match propbase:
             case {"Property": prop}:
                 return self.ng_prop(prop)
+            case {"Owner": owner, "Property": prop}:
+                return self.ng_base(owner=self.ng_objref(owner), prop=self.ng_prop(prop))
             case {"Path": path, "ResolvedOwner": owner}:
                 return dict(name=path, owner=self.ng_objref(owner))
             case _:
@@ -116,13 +118,6 @@ class AST:
             case _:
                 raise ValueError(obj)
 
-    def ng_innerprop(self, inner_prop):
-        match inner_prop:
-            case {"Owner": owner, "Property": prop}:
-                return self.ng_base(owner=self.ng_objref(owner), prop=self.ng_prop(prop))
-            case _:
-                raise ValueError(inner_prop)
-
     def ng_func(self, inst, kind, func, params, **kwargs):
         return self.ng_baseinst(inst, kind, func=self.ng_objref(func), params=[self.ng_inst(p) for p in params], **kwargs)
 
@@ -145,7 +140,10 @@ class AST:
         return objpath[ridx:]
 
     def ng_arrconst(self, inst, kind, inner_prop, values):
-        return self.ng_baseinst(inst, kind, inner_prop=self.ng_innerprop(inner_prop), values=[self.ng_inst(v) for v in values]) # TODO: revise values
+        return self.ng_baseinst(inst, kind, inner_prop=self.ng_propkind("inner prop", inner_prop), values=[self.ng_inst(v) for v in values]) # TODO: revise values
+
+    def ng_bitfieldconst(self, inst, kind, inner_prop, const_value):
+        return self.ng_baseinst(inst, kind, inner_prop=self.ng_propkind("inner prop", inner_prop), const_value=const_value) # TODO: revise const_value
 
     def ng_inst(self, script, index=None):
         inst = script.get("Inst")
@@ -186,6 +184,8 @@ class AST:
                 return self.ng_const(inst, "obj", self.ng_objref(value))
             case {"Inst": "EX_ArrayConst", "InnerProperty": inner_prop, "Values": values}:
                 return self.ng_arrconst(inst, "arr const", inner_prop, values)
+            case {"Inst": "EX_BitFieldConst", "InnerProperty": inner_prop, "ConstValue": const_value}:
+                return self.ng_bitfieldconst(inst, "bitfld const", inner_prop, const_value)
             case {"Inst": "EX_IntZero"}:
                 return self.ng_const_num(inst, "int", 0)
             case {"Inst": "EX_IntOne"}:
