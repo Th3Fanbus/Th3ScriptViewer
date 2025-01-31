@@ -17,24 +17,10 @@ class ASTNode(dict):
         super().__init__(self, **kwargs)
 
     def with_index(self, index):
-        self.update(index=index) # , stack=[]
+        self.update(index=index)
         return self
 
 class AST:
-    def __init__(self, name, bytecode):
-        self.name = name
-        self.index_stack = []
-        self.last_index = None
-        self.link_list = []
-        self.temp_link_list = []
-        self.script_nodes = {}
-        for p in bytecode:
-            k, v = self.ng_serialize(p)
-            self.script_nodes[k] = v
-        self.visited_nodes = {}
-        self.ng_resolvestack(0, [], None)
-        self.link_list.extend(self.temp_link_list)
-
     def ng_serialize(self, script):
         index = script.get("StatementIndex")
         node = self.ng_inst(script, index)
@@ -52,7 +38,6 @@ class AST:
         return index, node.with_index(index)
 
     def ng_base(self, **kwargs):
-        #kwargs.pop("kind", None)
         return ASTNode(**kwargs)
 
     def ng_basekind(self, kind, **kwargs):
@@ -69,7 +54,7 @@ class AST:
         return self.ng_const(inst, "bool", bval)
 
     def ng_const_num(self, inst, kind, value):
-        return self.ng_const(inst, kind, str(value))
+        return self.ng_const(inst, kind, value)
 
     def ng_const_struct(self, inst, kind, value):
         return self.ng_const(inst, kind, value)
@@ -247,7 +232,12 @@ class AST:
             case {"Inst": "EX_DefaultVariable", "Variable": variable}:
                 return self.ng_propinst(inst, "def var", variable)
             case {"Inst": "EX_ComputedJump", "OffsetExpression": expression}:
-                # TODO: Figure out how to deal with this
+                # Looks like computed jumps only exist in the ExecuteUbergraph, and only one of them exists.
+                assert not self.is_ubergraph, "Found multiple computed jumps???"
+                self.is_ubergraph = True
+                self.cmptd_jump_index = index
+                # We cannot generate a meaningful graph for the entire ubergraph
+                self.not_entrypoints.add(0)
                 return self.ng_baseinst(inst, "computed jump", expr=self.ng_inst(expression), no_flow=True)
             case {"Inst": "EX_Return", "Expression": expression}:
                 return self.ng_baseinst(inst, "return", expr=self.ng_inst(expression))
@@ -259,12 +249,13 @@ class AST:
                 return self.ng_baseinst(inst, "remove multi dele", multi_dele=self.ng_inst(multi_dele), delegate=self.ng_inst(delegate))
             case {"Inst": "EX_Jump", "CodeOffset": jmp_offset, "ObjectPath": objpath}:
                 self.link_list.append((index, jmp_offset))
-                return self.ng_baseinst(inst, "jump", jmp_offset=str(jmp_offset), objpath=self.ng_shortpath(objpath), no_flow=True)
+                return self.ng_baseinst(inst, "jump", jmp_offset=jmp_offset, objpath=self.ng_shortpath(objpath), no_flow=True)
             case {"Inst": "EX_JumpIfNot", "CodeOffset": jmp_offset, "ObjectPath": objpath, "BooleanExpression": predicate}:
                 self.link_list.append((index, jmp_offset))
-                return self.ng_baseinst(inst, "jump if not", jmp_offset=str(jmp_offset), objpath=self.ng_shortpath(objpath), predicate=self.ng_inst(predicate))
+                return self.ng_baseinst(inst, "jump if not", jmp_offset=jmp_offset, objpath=self.ng_shortpath(objpath), predicate=self.ng_inst(predicate))
             case {"Inst": "EX_PushExecutionFlow", "PushingAddress": push_addr, "ObjectPath": objpath}:
-                return self.ng_baseinst(inst, "push exec", push_addr=str(push_addr), objpath=self.ng_shortpath(objpath))
+                self.not_entrypoints.add(push_addr)
+                return self.ng_baseinst(inst, "push exec", push_addr=push_addr, objpath=self.ng_shortpath(objpath))
             case {"Inst": "EX_PopExecutionFlow"}:
                 return self.ng_baseinst(inst, "pop exec", pop_addr=None, no_flow=True)
             case {"Inst": "EX_PopExecutionFlowIfNot", "BooleanExpression": predicate}:
@@ -276,82 +267,108 @@ class AST:
             case _:
                 raise ValueError(script)
 
-    def ng_resolvestack(self, index, in_stack, last_index):
-        stack = in_stack.copy()
-        links = self.get_links(index)
-        #print(f"{index} stack: {stack}")
-        #print(self.script_nodes[index])
-        if self.script_nodes[index]["inst"] == "EX_ComputedJump":
-            return
-        if self.script_nodes[index]["inst"] == "EX_EndOfScript":
-            if not len(links) == 0 or not len(stack) == 0:
-                print(f"Unmatched links: {len(links)}")
-                for l in links:
-                    print(f"    {l}")
-                print(f"Remaining stack: {len(stack)}")
-                for s in stack:
-                    print(f"    {s}")
-            assert len(links) == 0
-            stack.clear()
-        else:
-            assert len(links) > 0 or len(stack) > 0
-        if index in self.visited_nodes:
-            #print(f"{index} stack: {stack} (cached {self.visited_nodes[index]})")
-            return
-        self.visited_nodes[index] = stack
-        match self.script_nodes[index]:
-            case {"inst": "EX_PushExecutionFlow", "push_addr": in_addr}:
-                print(f"  {index} push addr {in_addr}")
-                stack.append(int(in_addr))
-            case {"inst": "EX_PopExecutionFlow", "pop_addr": in_addr}:
-                assert len(stack) > 0
-                addr = stack[-1]
-                print(f"  {index} pop addr {addr}")
-                if addr != in_addr:
-                    #print(links)
-                    assert in_addr is None
-                    assert len(links) == 0
-                    self.script_nodes[index]["pop_addr"] = addr
-                    self.temp_link_list.append((index, addr))
-                    self.ng_resolvestack(addr, stack[:-1], index)
-            case {"inst": "EX_PopExecutionFlowIfNot", "pop_addr": in_addr}:
-                assert len(stack) > 0
-                addr = stack[-1]
-                print(f"  {index} pop if addr {addr}")
-                if addr != in_addr:
-                    #print(links)
-                    assert in_addr is None
-                    assert len(links) == 1
-                    self.script_nodes[index]["pop_addr"] = addr
-                    self.temp_link_list.append((index, addr))
-                    self.ng_resolvestack(addr, stack[:-1], index)
-        node_stack = self.script_nodes[index].get("stack", None)
-        if node_stack is not None:
-            node_stack.append(stack)
-            self.script_nodes[index].update(stack=node_stack)
-        for _, next in links:
-            self.ng_resolvestack(next, stack, index)
+    def __init__(self, name, bytecode):
+        self.name = name
+        self.is_ubergraph = False
+        self.not_entrypoints = set()
+        self.cmptd_jump_index = None
+        self.index_stack = []
+        self.last_index = None
+        self.link_list = []
+        self.temp_link_list = []
+        self.script_nodes = {}
+        for p in bytecode:
+            k, v = self.ng_serialize(p)
+            self.script_nodes[k] = v
+        for ep in self.get_entrypoints():
+            #print(f"resolving stack for ep={ep}")
+            self.ng_resolvestack(ep)
+            #print()
+        self.link_list.extend(self.temp_link_list)
 
-    def get_links(self, index, dir=0):
+    def ng_resolvestack(self, ep):
+        visited_nodes = {}
+        def ng_resolvestack_inner(index, in_stack, last_index):
+            #print(f"resolvestack(index={index}, in_stack={in_stack}, last_index={last_index}")
+            stack = in_stack.copy()
+            links = self.get_out_links(index, ep)
+            #print(f"{index} stack: {stack}")
+            #print(self.script_nodes[index])
+            if self.script_nodes[index]["inst"] == "EX_EndOfScript":
+                if not len(links) == 0 or not len(stack) == 0:
+                    print(f"Unmatched links: {len(links)}")
+                    for l in links:
+                        print(f"    {l}")
+                    print(f"Remaining stack: {len(stack)}")
+                    for s in stack:
+                        print(f"    {s}")
+                assert len(links) == 0
+                stack.clear()
+            else:
+                assert len(links) > 0 or len(stack) > 0
+            if index in visited_nodes:
+                return
+            visited_nodes[index] = stack
+            match self.script_nodes[index]:
+                case {"inst": "EX_PushExecutionFlow", "push_addr": in_addr}:
+                    #print(f"  {index} push addr {in_addr}")
+                    stack.append(int(in_addr))
+                case {"inst": ("EX_PopExecutionFlow" | "EX_PopExecutionFlowIfNot") as inst, "pop_addr": in_addr}:
+                    is_conditional = inst == "EX_PopExecutionFlowIfNot"
+                    assert len(stack) > 0
+                    addr = stack[-1]
+                    #print(f"  {index} pop{" if" if is_conditional else ""} addr {addr}")
+                    if addr != in_addr:
+                        #print(links)
+                        assert in_addr is None
+                        assert len(links) == int(is_conditional)
+                        self.script_nodes[index]["pop_addr"] = addr
+                        self.temp_link_list.append((index, addr))
+                        ng_resolvestack_inner(addr, stack[:-1], index)
+            node_stack = self.script_nodes[index].get("stack", None)
+            if node_stack is not None:
+                node_stack.append(stack)
+                self.script_nodes[index].update(stack=node_stack)
+            for _, next in links:
+                ng_resolvestack_inner(next, stack, index)
+
+        ng_resolvestack_inner(0, [], None)
+
+    def _get_links(self, index, dir):
         return {l for l in self.link_list if l[dir] == index}
+
+    def get_in_links(self, index):
+        return self._get_links(index, 1)
+
+    def get_out_links(self, index, jump_target=None):
+        links = self._get_links(index, 0)
+        # Add an out link for the computed jump in the ubergraphs
+        if index == self.cmptd_jump_index and jump_target is not None:
+            assert jump_target > index
+            links.add((index, jump_target))
+        return links
 
     def get_node(self, index):
         return self.script_nodes.get(index, None)
 
     def get_entrypoints(self):
-        return {ep for ep in self.script_nodes.keys() if len(self.get_links(ep, 1)) == 0}
+        def is_entrypoint(ep):
+            return ep not in self.not_entrypoints and len(self.get_in_links(ep)) == 0
+        entrypoints = {ep for ep in self.script_nodes.keys() if is_entrypoint(ep)}
+        assert self.is_ubergraph or len(entrypoints) == 1
+        return entrypoints
 
-    def ng_subgraph(self, ep=None):
-        if ep is None:
+    def ng_subgraph(self, ep=0):
+        if ep == 0:
             return self.script_nodes.values(), self.link_list
         final_nodes = set()
         final_edges = set()
-        local_nodes = {ep}
+        local_nodes = {0}
         local_edges = set()
         while len(local_nodes - final_nodes) > 0:
             final_nodes |= local_nodes
             for ln in local_nodes:
-                local_edges |= self.get_links(ln)
+                local_edges |= self.get_out_links(ln, ep)
             final_edges |= local_edges
             local_nodes.clear()
             for le in local_edges:
@@ -383,13 +400,8 @@ class ScriptGraph(graphviz.Digraph):
         else:
             return str(n)
 
-    def make_label_simple(self, n, prefix):
-        fields = ["index", "inst", "stack"]
-        return "|".join([f"{{{f}|{n[f]}}}" for f in fields])
-
     def draw_node(self, n):
         self.node(str(n["index"]), label=self.make_label(n, ""), shape="record", rankdir="LR")
-        #self.node(str(n["index"]), label=self.make_label_simple(n, ""), shape="record", rankdir="LR")
 
     def draw_edge(self, tail, head):
         self.edge(str(tail), str(head))
@@ -403,25 +415,18 @@ def generate_func_graphs(filename, scriptname, bytecode):
         with open(debugfile, "w") as f:
             json.dump(ast.script_nodes, f, indent=4)
     graphs = []
-    if True:
-        g = ScriptGraph(comment=scriptname, format="png")
-        nodes, edges = ast.ng_subgraph()
+    entrypoints = ast.get_entrypoints()
+    if ast.is_ubergraph:
+        assert ast.cmptd_jump_index is not None
+    for ep in entrypoints:
+        usename = scriptname if ep == 0 else f"{scriptname}_{ep}"
+        g = ScriptGraph(comment=usename, format="png")
+        nodes, edges = ast.ng_subgraph(ep)
         for n in nodes:
             g.draw_node(n)
         for (tail, head) in edges:
             g.draw_edge(tail, head)
-        graphs.append((scriptname, g))
-    entrypoints = ast.get_entrypoints()
-    if len(entrypoints) > 1:
-        for ep in entrypoints:
-            usename = f"{scriptname}_{ep}"
-            g = ScriptGraph(comment=usename, format="png")
-            nodes, edges = ast.ng_subgraph(ep)
-            for n in nodes:
-                g.draw_node(n)
-            for (tail, head) in edges:
-                g.draw_edge(tail, head)
-            graphs.append((usename, g))
+        graphs.append((usename, g))
     return graphs
 
 def render_graph_file(g, infilename, name):
@@ -456,7 +461,11 @@ def main_dir(dirname):
             print()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
+    if len(sys.argv) > 2 and sys.argv[1] == "-d":
+        print(f"Hello {sys.argv[0]}: {sys.argv[1]} {sys.argv[2]}")
+        main_dir(sys.argv[2])
+        pass
+    elif len(sys.argv) > 1:
         print(f"Hello {sys.argv[0]}: {sys.argv[1]}")
         main(sys.argv[1])
     else:
