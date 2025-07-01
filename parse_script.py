@@ -145,6 +145,8 @@ class AST:
                 return self.ng_const_num(inst, "byte", value)
             case {"Inst": "EX_IntConst", "Value": value}:
                 return self.ng_const_num(inst, "int", value)
+            case {"Inst": "EX_Int64Const", "Value": value}:
+                return self.ng_const_num(inst, "int64", value)
             case {"Inst": "EX_SkipOffsetConst", "Value": value}:
                 return self.ng_const_num(inst, "skip offset", value)
             case {"Inst": "EX_FloatConst", "Value": value}:
@@ -398,7 +400,7 @@ class ScriptGraph(graphviz.Digraph):
         elif isinstance(n, list):
             return "|".join([f"{{{self.make_label(e, prefix)}}}" for e in n])
         else:
-            return str(n)
+            return str(n).replace("{", "\\{").replace("}", "\\}")
 
     def draw_node(self, n):
         self.node(str(n["index"]), label=self.make_label(n, ""), shape="record", rankdir="LR")
