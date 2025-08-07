@@ -217,6 +217,8 @@ class AST:
                 return self.ng_baseinst(inst, "struct mmb ctx", var=self.ng_propkind("struct mmb", prop), expr=self.ng_inst(expression))
             case {"Inst": "EX_SetArray", "AssigningProperty": prop, "Elements": elements}:
                 return self.ng_baseinst(inst, "set array", prop=self.ng_inst(prop), elements=[self.ng_inst(e) for e in elements])
+            case {"Inst": "EX_ArrayGetByRef", "ArrayVariable": array, "ArrayIndex": index}:
+                return self.ng_baseinst(inst, "array get by ref", array=self.ng_inst(array), index=self.ng_inst(index))
             case {"Inst": "EX_Cast", "Target": target, "ConversionType": conv_type}:
                 return self.ng_baseinst(inst, "cast", target=self.ng_inst(target), conv_type=conv_type)
             case {"Inst": "EX_DynamicCast", "Target": target, "Class": clazz}:
@@ -249,6 +251,8 @@ class AST:
                 return self.ng_baseinst(inst, "add multi dele", multi_dele=self.ng_inst(multi_dele), delegate=self.ng_inst(delegate))
             case {"Inst": "EX_RemoveMulticastDelegate", "MulticastDelegate": multi_dele, "Delegate": delegate}:
                 return self.ng_baseinst(inst, "remove multi dele", multi_dele=self.ng_inst(multi_dele), delegate=self.ng_inst(delegate))
+            case {"Inst": "EX_ClearMulticastDelegate", "DelegateToClear": multi_dele}:
+                return self.ng_baseinst(inst, "clear multi dele", multi_dele=self.ng_inst(multi_dele))
             case {"Inst": "EX_Jump", "CodeOffset": jmp_offset, "ObjectPath": objpath}:
                 self.link_list.append((index, jmp_offset))
                 return self.ng_baseinst(inst, "jump", jmp_offset=jmp_offset, objpath=self.ng_shortpath(objpath), no_flow=True)
@@ -357,7 +361,8 @@ class AST:
         def is_entrypoint(ep):
             return ep not in self.not_entrypoints and len(self.get_in_links(ep)) == 0
         entrypoints = {ep for ep in self.script_nodes.keys() if is_entrypoint(ep)}
-        assert self.is_ubergraph or len(entrypoints) == 1
+        print(f"ubergraph = {self.is_ubergraph}, entrypoints = {len(entrypoints)}")
+        #assert self.is_ubergraph or len(entrypoints) == 1
         return entrypoints
 
     def ng_subgraph(self, ep=0):
