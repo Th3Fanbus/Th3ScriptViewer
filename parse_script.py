@@ -276,7 +276,7 @@ class AST:
             case {"Inst": "EX_SetArray", "AssigningProperty": prop, "Elements": elements}:
                 return self.ng_baseinst(inst, "set array", prop=self.ng_inst(prop), elements=[self.ng_inst(e) for e in elements])
             case {"Inst": "EX_ArrayGetByRef", "ArrayVariable": array_var, "ArrayIndex": array_idx}:
-                return self.ng_baseinst(inst, "array get by ref", array=self.ng_inst(array_var), index=self.ng_inst(array_idx))
+                return self.ng_baseinst(inst, "array get by ref", array=self.ng_inst(array_var), arr_index=self.ng_inst(array_idx))
             case {"Inst": "EX_Cast", "Target": target, "ConversionType": conv_type}:
                 return self.ng_baseinst(inst, "cast", target=self.ng_inst(target), conv_type=conv_type)
             case {"Inst": "EX_DynamicCast", "Target": target, "Class": clazz}:
@@ -448,7 +448,7 @@ class ScriptGraph(graphviz.Digraph):
             excluded_fields = ["index", "kind"]
             fields = []
             if "index" in n:
-                fields.append(f"{{index|{n["index"]}}}")
+                fields.append(f"{{index|\"{n["index"]}\"}}")
             return "|".join(fields + [f"{{{k}|{{{self.make_label(v, prefix)}}}}}" for k, v in n.items() if k not in excluded_fields])
         elif isinstance(n, list):
             return "|".join([f"{{{self.make_label(e, prefix)}}}" for e in n])
