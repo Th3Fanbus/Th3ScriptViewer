@@ -5,23 +5,71 @@ import json
 import os
 import re
 import sys
-import tempfile
 
-DUMP_INTERMEDIATE = False
-
+# TODO: make these configurable
 BG_COLOR = "#222222"
 FG_COLOR = "#dddddd"
+
+# TODO: use something that also works OOTB on non-Windows
+FONT_NAME = "Arial"
+FONT_SIZE = "12"
+
+GRAPH_OUT_FOLDER = "graphs"
+
+# TODO: is this useful anymore?
+DUMP_INTERMEDIATE = False
+
+# Equates for link directions
+LINK_START = 0
+LINK_FINAL = 1
+
+def print_plate(msg):
+    middle_line = f"# {msg} #"
+    border_line = '#' * len(middle_line)
+    print(border_line)
+    print(middle_line)
+    print(border_line)
 
 class ASTNode(dict):
     def __init__(self, **kwargs):
         super().__init__(self, **kwargs)
 
-    def with_index(self, index):
-        self.update(index=index)
-        return self
+    @property
+    def index(self):
+        return self.get("index")
+
+    @property
+    def inst(self):
+        return self.get("inst")
 
 class AST:
-    def ng_serialize(self, script):
+    def __init__(self, name):
+        self.name = name
+        self.is_ubergraph = False
+        self.not_entrypoints = set()
+        self.cmptd_jump_index = None
+        self.index_stack = []
+        self.last_index = None
+        self.link_list = []
+        self.temp_link_list = []
+        self.script_nodes = {}
+
+    @classmethod
+    def serialize(cls, name, bytecode):
+        ast = cls(name)
+        for p in bytecode:
+            node = ast.ng_statement(p)
+            ast.script_nodes[node.index] = node
+        for ep in ast.get_entrypoints():
+            #print(f"resolving stack for ep={ep}")
+            ast.ng_resolvestack(ep)
+            #print()
+        # TODO: why do we only append the stack links after 
+        ast.link_list.extend(ast.temp_link_list)
+        return ast
+
+    def ng_statement(self, script):
+        # This field HAS TO exist in a statement
         index = script.get("StatementIndex")
         node = self.ng_inst(script, index)
         node.update(index=index)
@@ -34,8 +82,8 @@ class AST:
         else:
             # Non-jump node, assume exec flows linearly
             self.last_index = index
-        #print(f"Serialized {node.get("inst")} at {index}")
-        return index, node.with_index(index)
+        #print(f"Serialized {node.inst)} at {index}")
+        return node
 
     def ng_base(self, **kwargs):
         return ASTNode(**kwargs)
@@ -53,9 +101,11 @@ class AST:
         bval = "true" if value else "false"
         return self.ng_const(inst, "bool", bval)
 
+    # TODO: do we need this wrapper?
     def ng_const_num(self, inst, kind, value):
         return self.ng_const(inst, kind, value)
 
+    # TODO: do we need this wrapper?
     def ng_const_struct(self, inst, kind, value):
         return self.ng_const(inst, kind, value)
 
@@ -69,14 +119,16 @@ class AST:
             case _:
                 raise ValueError(prop)
 
+    # TODO: is there a way to avoid having this as a separate function?
+    # IIRC, the idea is to put these properties after `inst` and `kind`
     def _ng_propbase(self, propbase):
         match propbase:
-            case {"Property": prop}:
-                return self.ng_prop(prop)
-            case {"Owner": owner, "Property": prop}:
-                return self.ng_base(owner=self.ng_objref(owner), prop=self.ng_prop(prop))
             case {"Path": path, "ResolvedOwner": owner}:
                 return dict(name=path, owner=self.ng_objref(owner))
+            case {"Owner": owner, "Property": prop}:
+                return self.ng_base(owner=self.ng_objref(owner), prop=self.ng_prop(prop))
+            case {"Property": prop}:
+                return self.ng_prop(prop)
             case _:
                 raise ValueError(propbase)
 
@@ -89,10 +141,12 @@ class AST:
     def ng_objref(self, obj):
         match obj:
             case {"ObjectName": objname, "ObjectPath": objpath}:
+                # TODO: what does 'fm' mean? Full Match?
                 fm = re.match("(.*)'(.*):(.*)'", objname)
                 if fm is not None:
                     uetype, outer, name = fm.group(1, 2, 3)
                     return self.ng_base(uetype=uetype, outer=outer, name=name, objpath=self.ng_shortpath(objpath))
+                # TODO: what does 'm' mean? Short Match?
                 sm = re.match("(.*)'(.*)'", objname)
                 if sm is not None:
                     uetype, name = sm.group(1, 2)
@@ -125,12 +179,16 @@ class AST:
         return objpath[ridx:]
 
     def ng_arrconst(self, inst, kind, inner_prop, values):
-        return self.ng_baseinst(inst, kind, inner_prop=self.ng_propkind("inner prop", inner_prop), values=[self.ng_inst(v) for v in values]) # TODO: revise values
+        # TODO: revise values
+        return self.ng_baseinst(inst, kind, inner_prop=self.ng_propkind("inner prop", inner_prop), values=[self.ng_inst(v) for v in values])
 
     def ng_bitfieldconst(self, inst, kind, inner_prop, const_value):
-        return self.ng_baseinst(inst, kind, inner_prop=self.ng_propkind("inner prop", inner_prop), const_value=const_value) # TODO: revise const_value
+        # TODO: revise const_value
+        return self.ng_baseinst(inst, kind, inner_prop=self.ng_propkind("inner prop", inner_prop), const_value=const_value)
 
     def ng_inst(self, script, index=None):
+        # This field has to exist given that we are parsing an instruction
+        # The match-case below uses it to distinguish between instructions
         inst = script.get("Inst")
         match script:
             case {"Inst": "EX_SwitchValue", "IndexTerm": sw_index, "EndGotoOffset": end_goto, "Cases": cases, "DefaultTerm": default}:
@@ -184,9 +242,9 @@ class AST:
             case {"Inst": "EX_Self"}:
                 return self.ng_const(inst, "self", "<Self>")
             case {"Inst": "EX_NoObject"}:
-                return self.ng_const(inst, "no obj", "<None>")
+                return self.ng_const(inst, "no obj", "<No Obj>")
             case {"Inst": "EX_NoInterface"}:
-                return self.ng_const(inst, "no intf", "<None>")
+                return self.ng_const(inst, "no intf", "<No Intf>")
             case {"Inst": "EX_Nothing"}:
                 return self.ng_baseinst(inst, "void")
             case {"Inst": "EX_StructConst", "Struct": struct, "Properties": params}:
@@ -217,8 +275,8 @@ class AST:
                 return self.ng_baseinst(inst, "struct mmb ctx", var=self.ng_propkind("struct mmb", prop), expr=self.ng_inst(expression))
             case {"Inst": "EX_SetArray", "AssigningProperty": prop, "Elements": elements}:
                 return self.ng_baseinst(inst, "set array", prop=self.ng_inst(prop), elements=[self.ng_inst(e) for e in elements])
-            case {"Inst": "EX_ArrayGetByRef", "ArrayVariable": array, "ArrayIndex": index}:
-                return self.ng_baseinst(inst, "array get by ref", array=self.ng_inst(array), index=self.ng_inst(index))
+            case {"Inst": "EX_ArrayGetByRef", "ArrayVariable": array_var, "ArrayIndex": array_idx}:
+                return self.ng_baseinst(inst, "array get by ref", array=self.ng_inst(array_var), index=self.ng_inst(array_idx))
             case {"Inst": "EX_Cast", "Target": target, "ConversionType": conv_type}:
                 return self.ng_baseinst(inst, "cast", target=self.ng_inst(target), conv_type=conv_type)
             case {"Inst": "EX_DynamicCast", "Target": target, "Class": clazz}:
@@ -238,6 +296,7 @@ class AST:
             case {"Inst": "EX_ComputedJump", "OffsetExpression": expression}:
                 # Looks like computed jumps only exist in the ExecuteUbergraph, and only one of them exists.
                 assert not self.is_ubergraph, "Found multiple computed jumps???"
+                assert index is not None, f"'{inst}' not a statement???"
                 self.is_ubergraph = True
                 self.cmptd_jump_index = index
                 # We cannot generate a meaningful graph for the entire ubergraph
@@ -254,9 +313,11 @@ class AST:
             case {"Inst": "EX_ClearMulticastDelegate", "DelegateToClear": multi_dele}:
                 return self.ng_baseinst(inst, "clear multi dele", multi_dele=self.ng_inst(multi_dele))
             case {"Inst": "EX_Jump", "CodeOffset": jmp_offset, "ObjectPath": objpath}:
+                assert index is not None, f"'{inst}' not a statement???"
                 self.link_list.append((index, jmp_offset))
                 return self.ng_baseinst(inst, "jump", jmp_offset=jmp_offset, objpath=self.ng_shortpath(objpath), no_flow=True)
             case {"Inst": "EX_JumpIfNot", "CodeOffset": jmp_offset, "ObjectPath": objpath, "BooleanExpression": predicate}:
+                assert index is not None, f"'{inst}' not a statement???"
                 self.link_list.append((index, jmp_offset))
                 return self.ng_baseinst(inst, "jump if not", jmp_offset=jmp_offset, objpath=self.ng_shortpath(objpath), predicate=self.ng_inst(predicate))
             case {"Inst": "EX_PushExecutionFlow", "PushingAddress": push_addr, "ObjectPath": objpath}:
@@ -268,39 +329,23 @@ class AST:
                 return self.ng_baseinst(inst, "pop exec if not", pop_addr=None, predicate=self.ng_inst(predicate))
             case {"Inst": "EX_EndOfScript"}:
                 return self.ng_baseinst(inst, "script end", no_flow=True)
-            case {"Inst": inst}:
-                raise ValueError(script)
+            case {"Inst": _}:
+                raise ValueError(f"ng_inst: Unknown instruction type '{inst}'") from ValueError(script)
             case _:
-                raise ValueError(script)
-
-    def __init__(self, name, bytecode):
-        self.name = name
-        self.is_ubergraph = False
-        self.not_entrypoints = set()
-        self.cmptd_jump_index = None
-        self.index_stack = []
-        self.last_index = None
-        self.link_list = []
-        self.temp_link_list = []
-        self.script_nodes = {}
-        for p in bytecode:
-            k, v = self.ng_serialize(p)
-            self.script_nodes[k] = v
-        for ep in self.get_entrypoints():
-            #print(f"resolving stack for ep={ep}")
-            self.ng_resolvestack(ep)
-            #print()
-        self.link_list.extend(self.temp_link_list)
+                # Should never be reached
+                raise ValueError("ng_inst: Invalid or malformed 'script'") from ValueError(script)
 
     def ng_resolvestack(self, ep):
         visited_nodes = {}
+        # TODO: remove unused parameter
         def ng_resolvestack_inner(index, in_stack, last_index):
             #print(f"resolvestack(index={index}, in_stack={in_stack}, last_index={last_index}")
+            # TODO: try to avoid copying the stack if we're going to clear it later
             stack = in_stack.copy()
             links = self.get_out_links(index, ep)
             #print(f"{index} stack: {stack}")
             #print(self.script_nodes[index])
-            if self.script_nodes[index]["inst"] == "EX_EndOfScript":
+            if self.script_nodes[index].inst == "EX_EndOfScript":
                 if not len(links) == 0 or not len(stack) == 0:
                     print(f"Unmatched links: {len(links)}")
                     for l in links:
@@ -308,7 +353,9 @@ class AST:
                     print(f"Remaining stack: {len(stack)}")
                     for s in stack:
                         print(f"    {s}")
+                # Any remaining links will be printed for debugging
                 assert len(links) == 0
+                # It seems that it's ok if the stack isn't empty at the end
                 stack.clear()
             else:
                 assert len(links) > 0 or len(stack) > 0
@@ -344,13 +391,15 @@ class AST:
         return {l for l in self.link_list if l[dir] == index}
 
     def get_in_links(self, index):
-        return self._get_links(index, 1)
+        return self._get_links(index, LINK_FINAL)
 
     def get_out_links(self, index, jump_target=None):
-        links = self._get_links(index, 0)
+        links = self._get_links(index, LINK_START)
         # Add an out link for the computed jump in the ubergraphs
         if index == self.cmptd_jump_index and jump_target is not None:
-            assert jump_target > index
+            assert self.script_nodes[index].inst == "EX_ComputedJump"
+            # TODO: can there be computed jumps that go backwards?
+            assert jump_target > index, "Computed jump going backwards???"
             links.add((index, jump_target))
         return links
 
@@ -361,8 +410,9 @@ class AST:
         def is_entrypoint(ep):
             return ep not in self.not_entrypoints and len(self.get_in_links(ep)) == 0
         entrypoints = {ep for ep in self.script_nodes.keys() if is_entrypoint(ep)}
-        print(f"ubergraph = {self.is_ubergraph}, entrypoints = {len(entrypoints)}")
+        # TODO: assertion does not hold in some cases
         #assert self.is_ubergraph or len(entrypoints) == 1
+        print(f"ubergraph = {self.is_ubergraph}, entrypoints = {len(entrypoints)}")
         return entrypoints
 
     def ng_subgraph(self, ep=0):
@@ -386,11 +436,9 @@ class AST:
 class ScriptGraph(graphviz.Digraph):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        #self.engine = "fdp"
-        #self.attr(bgcolor=BG_COLOR, charset="UTF-8", overlap="vpsc", compound="true")
-        self.attr(bgcolor=BG_COLOR, color=FG_COLOR, fontcolor=FG_COLOR, fontname="Arial", fontsize="12", charset="UTF-8", compound="true")
-        self.node_attr.update(shape="box", color=FG_COLOR, fontcolor=FG_COLOR, fontname="Arial", fontsize="12")
-        self.edge_attr.update(color=FG_COLOR, fontcolor=FG_COLOR, fontname="Arial", fontsize="12")
+        self.attr(bgcolor=BG_COLOR, color=FG_COLOR, fontcolor=FG_COLOR, fontname=FONT_NAME, fontsize=FONT_SIZE, charset="UTF-8", compound="true")
+        self.node_attr.update(shape="box", color=FG_COLOR, fontcolor=FG_COLOR, fontname=FONT_NAME, fontsize=FONT_SIZE)
+        self.edge_attr.update(color=FG_COLOR, fontcolor=FG_COLOR, fontname=FONT_NAME, fontsize=FONT_SIZE)
         self.last_index = None
         self.curr_index = None
         self.script_stack = []
@@ -414,14 +462,13 @@ class ScriptGraph(graphviz.Digraph):
         self.edge(str(tail), str(head))
 
 def generate_func_graphs(filename, scriptname, bytecode):
-    ast = AST(scriptname, bytecode)
+    ast = AST.serialize(scriptname, bytecode)
     if DUMP_INTERMEDIATE:
         filedir, _ = os.path.splitext(filename)
-        debugfile = os.path.join("graphs", filedir, f"{scriptname}.json")
+        debugfile = os.path.join(GRAPH_OUT_FOLDER, filedir, f"{scriptname}.json")
         os.makedirs(os.path.dirname(debugfile), exist_ok=True)
         with open(debugfile, "w") as f:
             json.dump(ast.script_nodes, f, indent=4)
-    graphs = []
     entrypoints = ast.get_entrypoints()
     if ast.is_ubergraph:
         assert ast.cmptd_jump_index is not None
@@ -433,15 +480,9 @@ def generate_func_graphs(filename, scriptname, bytecode):
             g.draw_node(n)
         for (tail, head) in edges:
             g.draw_edge(tail, head)
-        graphs.append((usename, g))
-    return graphs
+        yield (usename, g)
 
-def render_graph_file(g, infilename, name):
-    filedir, _ = os.path.splitext(infilename)
-    svgfile = os.path.join("graphs", filedir, f"{name}.gv")
-    g.render(filename=f"{svgfile}", format="svg")
-
-def main(filename):
+def disassemble_file(filename):
     data = json.load(open(filename))
     for entry in data:
         match entry:
@@ -449,36 +490,39 @@ def main(filename):
                 print(f"Found function '{scriptname}'")
                 for (funcname, fgraph) in generate_func_graphs(filename, scriptname, bytecode):
                     print(f"Rendering '{funcname}'...")
-                    render_graph_file(fgraph, filename, funcname)
+                    filedir, _ = os.path.splitext(filename)
+                    svgfile = os.path.join(GRAPH_OUT_FOLDER, filedir, f"{funcname}.gv")
+                    fgraph.render(filename=f"{svgfile}", format="svg")
             case {"Type": sometype}:
                 print(f"Found unknown type '{sometype}'")
             case _:
                 print(f"Found Whiskey Tango Foxtrot: {dir(entry).join(", ")}")
 
-def main_dir(dirname):
+def disassemble_dir(dirname):
     for root, _, files in os.walk(os.path.join(".", dirname)):
         for file in files:
-            f = os.path.join(root, file)
-            log_file_name = f"# PROCESSING '{f}' #"
-            log_msg_plate = '#' * len(log_file_name)
-            print(log_msg_plate)
-            print(log_file_name)
-            print(log_msg_plate)
-            main(f)
-            print()
+            # Ignore non-JSON files
+            if (file.endswith(".json")):
+                f = os.path.join(root, file)
+                print_plate(f"Processing '{f}'...")
+                disassemble_file(f)
+                print()
+
+def show_help(prog_name):
+    print("Disassemble Unreal Engine assets, must be in FModel JSON format.")
+    print("Can process one file at a time, or process all the files")
+    print(f"Usage: {prog_name} SOURCE")
+    print(f"  Or:  {prog_name} -d DIRECTORY")
+    print(f"Process one file: {prog_name} path/to/file.json")
 
 if __name__ == "__main__":
+    # NOTE: extra arguments are ignored
     if len(sys.argv) > 2 and sys.argv[1] == "-d":
         print(f"Hello {sys.argv[0]}: {sys.argv[1]} {sys.argv[2]}")
-        main_dir(sys.argv[2])
+        disassemble_dir(sys.argv[2])
         pass
     elif len(sys.argv) > 1:
         print(f"Hello {sys.argv[0]}: {sys.argv[1]}")
-        main(sys.argv[1])
+        disassemble_file(sys.argv[1])
     else:
-        main("Equip_StunSpear.json")
-        #main_dir("Map_Menu_Titan_Update8/")
-        #main("BPW_InventorySettings_Jetpack.json")
-        #main("SFP_GameWorld.json")
-        #main("BP_MusicManager.json")
-        #main("BPW_Th3UObjectCounter.json")
+        show_help(sys.argv[0] if len(sys.argv) > 0 else "parse_script.py")
