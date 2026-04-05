@@ -486,13 +486,19 @@ def disassemble_file(filename):
     data = json.load(open(filename))
     for entry in data:
         match entry:
-            case {"Type": "Function", "Name": scriptname, "ScriptBytecode": bytecode}:
-                print(f"Found function '{scriptname}'")
-                for (funcname, fgraph) in generate_func_graphs(filename, scriptname, bytecode):
-                    print(f"Rendering '{funcname}'...")
-                    filedir, _ = os.path.splitext(filename)
-                    svgfile = os.path.join(GRAPH_OUT_FOLDER, filedir, f"{funcname}.gv")
-                    fgraph.render(filename=f"{svgfile}", format="svg")
+            case {"Type": "Function", "Name": scriptname}:
+                bytecode = entry.get("ScriptBytecode")
+                if bytecode is None:
+                    print(f"Found function '{scriptname}', but it has no bytecode")
+                    print(f"Did you forget to enable 'Serialize Script Bytecode' in FModel's config?")
+                    return
+                else:
+                    print(f"Found function '{scriptname}'")
+                    for (funcname, fgraph) in generate_func_graphs(filename, scriptname, bytecode):
+                        print(f"Rendering '{funcname}'...")
+                        filedir, _ = os.path.splitext(filename)
+                        svgfile = os.path.join(GRAPH_OUT_FOLDER, filedir, f"{funcname}.gv")
+                        fgraph.render(filename=f"{svgfile}", format="svg")
             case {"Type": sometype}:
                 print(f"Found unknown type '{sometype}'")
             case _:
@@ -520,7 +526,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "-d":
         print(f"Hello {sys.argv[0]}: {sys.argv[1]} {sys.argv[2]}")
         disassemble_dir(sys.argv[2])
-        pass
     elif len(sys.argv) > 1:
         print(f"Hello {sys.argv[0]}: {sys.argv[1]}")
         disassemble_file(sys.argv[1])
